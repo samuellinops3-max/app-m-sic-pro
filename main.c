@@ -1,5 +1,4 @@
-// BR MUSIC - Player para PS3 (PSL1GHT) - mesmo molde do Cobra Arena
-// Controles: Cima/Baixo = navegar, X = tocar/pausar, Quadrado = parar, Triangulo = atualizar, START = sair
+// BR MUSIC - TOCA WAV DE VERDADE DENTRO DO APP!
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,15 +17,14 @@
 #define HOST_SIZE (32 * 1024 * 1024)
 #define MAXSONGS 500
 
-typedef struct { char name[128]; char path[256]; int is_mp3; } Song;
+typedef struct { char name[128]; char path[256]; } Song;
 static Song songs[MAXSONGS];
 static int songCount = 0;
 static int selected = 0;
-static int playing = 0;
 static int playingIdx = -1;
+static int playing = 0;
 static int playTime = 0;
 static int playDur = 180;
-static int scroll = 0;
 
 static gcmContextData *ctx;
 static u32 W, H;
@@ -35,6 +33,11 @@ static u32 fboff[2];
 static u32 *back;
 static int cur = 0, first_flip = 1;
 static volatile int running = 1;
+
+static AudioPort audioPort = 0;
+static int audioOpen = 0;
+static FILE *wavFile = NULL;
+static int wavDataLeft = 0;
 
 static void sysutil_cb(u64 status, u64 param, void *usrdata){
     (void)param; (void)usrdata;
@@ -118,48 +121,83 @@ static void draw_text_clip(const char *s,int x,int y,int sc,u32 c,int maxChars){
     if((int)strlen(buf)>maxChars){ buf[maxChars-3]=0; strcat(buf,"..."); }
     draw_text(buf,x,y,sc,c);
 }
-static int is_music(const char *n){
-    const char *e=strrchr(n,'.'); if(!e) return 0;
-    return !strcasecmp(e,".mp3")||!strcasecmp(e,".wav")||!strcasecmp(e,".ogg")||!strcasecmp(e,".flac")||!strcasecmp(e,".m4a");
-}
 static void scan_folder(const char *folder){
     DIR *d=opendir(folder); if(!d) return;
     struct dirent *ent;
     while((ent=readdir(d))!=NULL && songCount<MAXSONGS){
         if(ent->d_name[0]=='.') continue;
-        if(!is_music(ent->d_name)) continue;
-        // Evita duplicar as fixas
-        int dup=0; for(int i=0;i<songCount;i++){ if(!strcasecmp(songs[i].path, ent->d_name)) dup=1; }
-        if(dup) continue;
+        const char *e=strrchr(ent->d_name,'.');
+        if(!e || strcasecmp(e,".wav")!=0) continue;
         Song *s=&songs[songCount];
         strncpy(s->name,ent->d_name,sizeof(s->name)-1); s->name[sizeof(s->name)-1]=0;
         char *dot=strrchr(s->name,'.'); if(dot) *dot=0;
         snprintf(s->path,sizeof(s->path),"%s/%s",folder,ent->d_name);
-        s->is_mp3=1; songCount++;
+        songCount++;
     }
     closedir(d);
 }
 static void scan_all(void){
-    songCount=0; selected=0; scroll=0;
-    // MUSICAS DO HTML - FIXAS!
+    songCount=0; selected=0;
     const char *fixas[][2] = {
-        {"Smack That (feat. Eminem)", "Smack That (feat. Eminem).mp3"},
-        {"Losing My Religion", "Losing My Religion.mp3"},
-        {"Time", "Time.mp3"},
-        {"Yeah! (feat. Lil Jon & Ludacris)", "Yeah! (feat. Lil Jon & Ludacris).mp3"},
-        {"Yeah! (feat. Lil Jon)", "Yeah! (feat. Lil Jon).mp3"},
+        {"Smack That (feat. Eminem)", "/dev_hdd0/game/BRMU00001/USRDIR/music/Smack That (feat. Eminem).wav"},
+        {"Losing My Religion", "/dev_hdd0/game/BRMU00001/USRDIR/music/Losing My Religion.wav"},
+        {"Time", "/dev_hdd0/game/BRMU00001/USRDIR/music/Time.wav"},
+        {"Yeah! (feat. Lil Jon & Ludacris)", "/dev_hdd0/game/BRMU00001/USRDIR/music/Yeah! (feat. Lil Jon & Ludacris).wav"},
+        {"Yeah! (feat. Lil Jon)", "/dev_hdd0/game/BRMU00001/USRDIR/music/Yeah! (feat. Lil Jon).wav"},
     };
     for(int i=0;i<5;i++){
+        FILE *f=fopen(fixas[i][1],"rb");
+        if(!f) continue; fclose(f);
         Song *s=&songs[songCount];
-        strncpy(s->name, fixas[i][0], sizeof(s->name)-1); s->name[sizeof(s->name)-1]=0;
-        snprintf(s->path, sizeof(s->path), "/dev_hdd0/game/BRMU00001/USRDIR/music/%s", fixas[i][1]);
-        s->is_mp3=1; songCount++;
+        strncpy(s->name, fixas[i][0], sizeof(s->name)-1);
+        strncpy(s->path, fixas[i][1], sizeof(s->path)-1);
+        songCount++;
     }
     scan_folder("/dev_hdd0/music");
-    scan_folder("/dev_hdd0/MUSIC");
-    scan_folder("/dev_hdd0/BRMUSIC");
     scan_folder("/dev_usb000/music");
-    scan_folder("/dev_usb000/MUSIC");
+}
+static void stop_music(void){
+    if(wavFile){ fclose(wavFile); wavFile=NULL; }
+    if(audioOpen){ audioPortClose(audioPort); audioOpen=0; }
+    playing=0; playingIdx=-1; playTime=0;
+}
+static int start_music(const char *path){
+    stop_music();
+    wavFile = fopen(path, "rb");
+    if(!wavFile) return 0;
+    char hdr[44]; fread(hdr, 1, 44, wavFile);
+    fseek(wavFile, 44, SEEK_SET);
+    fseek(wavFile, 0, SEEK_END);
+    long total = ftell(wavFile) - 44;
+    fseek(wavFile, 44, SEEK_SET);
+    wavDataLeft = total;
+    playDur = total / (44100 * 4);
+    if(playDur < 1) playDur = 180;
+    AudioPortParam p; memset(&p,0,sizeof(p));
+    p.numChannels = 2;
+    p.numBlocks = 8;
+    p.attrib = 0;
+    p.level = 1.0f;
+    if(audioPortOpen(&p, &audioPort) != 0){ fclose(wavFile); wavFile=NULL; return 0; }
+    audioOpen = 1;
+    playing = 1; playTime = 0;
+    return 1;
+}
+static void pump_audio(void){
+    if(!playing || !wavFile || !audioOpen) return;
+    short pcm[2048];
+    size_t read = fread(pcm, 2, 2048, wavFile);
+    if(read == 0){
+        int next = (playingIdx+1) % songCount;
+        if(songCount>0) { playingIdx = next; start_music(songs[next].path); }
+        else stop_music();
+        return;
+    }
+    float out[2048];
+    for(size_t i=0;i<read;i++) out[i] = pcm[i] / 32768.0f;
+    audioPortSend(audioPort, out);
+    static int cnt=0; cnt++;
+    if(cnt>=43){ cnt=0; playTime++; }
 }
 static void fmt_time(char *out,int sec){ sprintf(out,"%d:%02d",sec/60,sec%60); }
 static void render(void){
@@ -172,9 +210,11 @@ static void render(void){
     draw_text(cnt, W - text_width(cnt,ui) - 24, 28, ui, 0x00809BBF);
     draw_text("CIMA/BAIXO NAVEGAR  X TOCAR  QUADRADO PARAR  TRIANGULO ATUALIZAR", 24, 68, 2, 0x00666688);
     if(songCount==0){
-        draw_text("NENHUMA MUSICA ACHADA!", W/2 - text_width("NENHUMA MUSICA ACHADA!",ui+2)/2, H/2-80, ui+2, 0x00FF4D4D);
+        draw_text("NENHUMA MUSICA WAV ACHADA!", W/2 - text_width("NENHUMA MUSICA WAV ACHADA!",ui+2)/2, H/2-80, ui+2, 0x00FF4D4D);
+        draw_text("CONVERTE MP3 PRA WAV E BOTA NA PASTA MUSIC!", W/2 - text_width("CONVERTE MP3 PRA WAV E BOTA NA PASTA MUSIC!",ui)/2, H/2-20, ui, 0x00AAAAAA);
     } else {
         int startY=110; int rowH=52; int visible=(H-110-150)/rowH;
+        static int scroll=0;
         if(selected<scroll) scroll=selected; if(selected>=scroll+visible) scroll=selected-visible+1;
         for(int i=0;i<visible;i++){
             int idx=scroll+i; if(idx>=songCount) break;
@@ -199,7 +239,7 @@ static void render(void){
             int pw = playDur>0 ? (bw*playTime/playDur) : 0;
             if(pw>0) fill_rect(bx, py+62, pw, 10, 0x001ED760);
             draw_text(t2, W-90, py+58, ui, 0x00AAAAAA);
-            draw_text(playing?"|| PAUSADO - APERTA X PRA TOCAR":"|> TOCANDO - APERTA X PRA PAUSAR", 24, py+88, ui, playing?0x00FFD23F:0x001ED760);
+            draw_text(playing?"|> TOCANDO - APERTA X PRA PAUSAR":"|| PAUSADO - APERTA X PRA TOCAR", 24, py+88, ui, playing?0x001ED760:0x00FFD23F);
         } else {
             draw_text("APERTA X NUMA MUSICA PRA TOCAR", 24, py+40, ui+1, 0x00809BBF);
         }
@@ -211,11 +251,9 @@ int main(int argc,char **argv){
     ioPadInit(7);
     sysUtilRegisterCallback(0, sysutil_cb, NULL);
     audioInit();
-    srand(12345);
     scan_all();
     padInfo info; padData d;
     int prevUp=0, prevDown=0, prevCross=0, prevSquare=0, prevTri=0, prevStart=0;
-    int frame=0;
     while(running){
         sysUtilCheckCallback();
         ioPadGetInfo(&info);
@@ -225,19 +263,17 @@ int main(int argc,char **argv){
         if(down && !prevDown && songCount>0){ selected++; if(selected>=songCount) selected=0; }
         if(cross && !prevCross && songCount>0){
             if(playingIdx==selected){ playing=!playing; }
-            else { playingIdx=selected; playing=1; playTime=0; playDur=120+rand()%180; }
+            else { playingIdx=selected; start_music(songs[playingIdx].path); }
         }
-        if(square && !prevSquare){ playing=0; playingIdx=-1; playTime=0; }
+        if(square && !prevSquare){ stop_music(); }
         if(tri && !prevTri){ scan_all(); }
         if(start && !prevStart) break;
         prevUp=up; prevDown=down; prevCross=cross; prevSquare=square; prevTri=tri; prevStart=start;
-        if(playing && playingIdx>=0){
-            if(frame%60==0){ playTime++; if(playTime>=playDur){ playingIdx=(playingIdx+1)%songCount; playTime=0; playDur=120+rand()%180; } }
-        }
-        frame++;
+        pump_audio();
         render();
         present();
-        usleep(16000);
+        usleep(8000);
     }
+    stop_music();
     return 0;
 }
