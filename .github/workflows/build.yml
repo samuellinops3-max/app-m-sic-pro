@@ -1,4 +1,4 @@
-name: Compilar PKG
+name: CompilarPKG
 on:
   push:
   workflow_dispatch:
@@ -13,7 +13,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y curl make git python2 python3 libgmp10 libelf1 zlib1g libssl1.1 bzip2 xz-utils
           ln -sf /usr/bin/python2 /usr/bin/python
       - uses: actions/checkout@v4
-      - name: Baixar toolchain do PS3
+      - name: BaixarToolchain
         run: |
           curl -sL https://github.com/bucanero/ps3toolchain/releases/download/ubuntu-latest-fad3b5fb/ps3dev-ubuntu-latest-2020-08-31.tar.gz | tar xz -C /opt
           ls /opt/ps3dev
@@ -21,7 +21,47 @@ jobs:
           echo "PSL1GHT=/opt/ps3dev" >> $GITHUB_ENV
           echo "/opt/ps3dev/bin" >> $GITHUB_PATH
           echo "/opt/ps3dev/ppu/bin" >> $GITHUB_PATH
-      - name: Gerar icone
+      - name: ArrumarEspacos
+        run: |
+          python3 - <<'PY'
+          import os, re, glob
+          # 1 - Renomeia musicas tirando espaco, (), &, !
+          for f in glob.glob("music/*.wav"):
+              base = os.path.basename(f)
+              novo = base.replace(" ", "").replace("(", "").replace(")", "").replace("&", "").replace("!", "").replace("'", "").replace(",", "")
+              # SmackThatfeat.Eminem.wav -> SmackThat.wav
+              novo = novo.replace("feat.Eminem", "").replace("feat.LilJonLudacris", "").replace("feat.LilJon", "")
+              novo = novo.replace("SmackThat.wav", "SmackThat.wav")
+              if novo != base:
+                  print(f"Renomeando: {base} -> {novo}")
+                  os.rename(f, os.path.join("music", novo))
+          # 2 - Arruma o main.c pra usar nome sem espaco
+          if os.path.exists("main.c"):
+              txt = open("main.c").read()
+              txt = txt.replace("Smack That (feat. Eminem).wav", "SmackThat.wav")
+              txt = txt.replace("Losing My Religion.wav", "LosingMyReligion.wav")
+              txt = txt.replace("Yeah! (feat. Lil Jon & Ludacris).wav", "Yeah.wav")
+              txt = txt.replace("Yeah! (feat. Lil Jon).wav", "Yeah.wav")
+              txt = txt.replace("Smack That (feat. Eminem)", "Smack That")
+              txt = txt.replace("Yeah! (feat. Lil Jon & Ludacris)", "Yeah")
+              open("main.c", "w").write(txt)
+              print("main.c arrumado!")
+          # 3 - Arruma o Makefile e sfo.xml tirando espaco do titulo
+          if os.path.exists("Makefile"):
+              txt = open("Makefile").read()
+              txt = txt.replace("BR MUSIC", "BRMUSIC")
+              txt = txt.replace('cp music/*.wav', 'cp "music"/*.wav')
+              open("Makefile", "w").write(txt)
+              print("Makefile arrumado!")
+          if os.path.exists("sfo.xml"):
+              txt = open("sfo.xml").read()
+              txt = txt.replace("BR MUSIC", "BRMUSIC")
+              open("sfo.xml", "w").write(txt)
+              print("sfo.xml arrumado!")
+          print("TUDO SEM ESPACO AGORA!")
+          PY
+          ls -R
+      - name: GerarIcone
         run: |
           python3 - <<'PY'
           import zlib, struct
