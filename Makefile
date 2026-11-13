@@ -29,7 +29,7 @@ $(TARGET).pkg: $(TARGET).elf ICON0.PNG $(SFOXML)
 	rm -rf pkg
 	mkdir -p pkg/USRDIR/music
 	cp ICON0.PNG pkg/ICON0.PNG
-	if [ -d music ]; then cp music/*.mp3 pkg/USRDIR/music/ 2>/dev/null || true; cp music/*.wav pkg/USRDIR/music/ 2>/dev/null || true; cp music/*.ogg pkg/USRDIR/music/ 2>/dev/null || true; fi
+	if [ -d music ]; then cp music/*.wav pkg/USRDIR/music/ 2>/dev/null || true; fi
 	$(PS3DEV)/bin/sprxlinker $(TARGET).elf
 	$(PS3DEV)/bin/make_self_npdrm $(TARGET).elf pkg/USRDIR/EBOOT.BIN $(CONTENTID)
 	$(PS3DEV)/bin/sfo.py --title "$(TITLE)" --appid "$(APPID)" -f $(SFOXML) pkg/PARAM.SFO
